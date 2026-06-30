@@ -42,7 +42,7 @@ class SchedutilState:
 class UserspaceState:
     maxFreq: float = 0
     minFreq: float = 0
-    fixedFrequency: float = 0
+    fixFreq: float = 0
     isDynamicScripting: bool = False
     script: str = ""
 

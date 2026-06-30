@@ -19,7 +19,7 @@ class LinuxCPUController:
             )
             return False
 
-        # Menggunakan sudo tee via subprocess agar aman berjalan di background tanpa prompt password
+        # Menggunakan sudo tee via subprocess agar aman berjalan di background
         cmd = f"echo {value} | sudo tee {path}"
         try:
             subprocess.run(
@@ -34,72 +34,78 @@ class LinuxCPUController:
             logging.error(f"Error saat menulis ke {path}: {e}")
             return False
 
-    def read_freq_file(self, filename: str) -> float | None:
-        path = f"{self.SYS_CPU_BASE}/cpu0/cpufreq/{filename}"
-        try:
-            with open(path, "r") as f:
-                freq_khz = int(f.read().strip())
-                return freq_khz / 1000000
-        except Exception as e:
-            logging.error(f"Error saat membaca {path}: {e}")
-            return None
-
-    def apply_governor_tunables(self, gov_name: str, sub_state):
-        # Pemetaan dari properti Dataclass kamu ke file asli di kernel Linux
-        translation_map = {
-            "thresholdUp": "up_threshold",
-            "thresholdDown": "down_threshold",
-            "samplingRate": "sampling_rate",
-            "samplingDownFactor": "sampling_down_factor",
-            "frequencyStep": "freq_step",
-            "rateLimit": "rate_limit_us",
-            "powerBias": "powersave_bias",
-            "isIgnoreNice": "ignore_nice_load",
-            "isIoBusy": "io_is_busy",
+    # Get Mode Governor
+    def get_governor_state(self, governor: str) -> dict:
+        result = {}
+        base_dir = f"{self.SYS_CPU_BASE}/cpu0/cpufreq"
+        freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
+        tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
+        tunables_map = {
+            "up_threshold": "thresholdUp",
+            "down_threshold": "thresholdDown",
+            "sampling_rate": "samplingRate",
+            "sampling_down_factor": "samplingDownFactor",
+            "freq_step": "frequencyStep",
+            "rate_limit_us": "rateLimit",
+            "powersave_bias": "powerBias",
+            "ignore_nice_load": "isIgnoreNice",
+            "io_is_busy": "isIoBusy",
         }
 
-        tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{gov_name}"
+        for linux_file, dict_key in freq_map.items():
+            if governor == "performance" and dict_key == "minFreq":
+                continue
+            if governor == "powersave" and dict_key == "maxFreq":
+                continue
 
-        # PENTING: Beri waktu jeda (max 500ms) agar kernel Linux sempat membuat direktori tunables
-        for _ in range(5):
-            if os.path.exists(tunables_dir):
-                break
-            time.sleep(0.1)
-        else:
-            logging.warning(
-                f"Direktori tunables tidak tersedia untuk governor: {gov_name}"
-            )
-            return
+            file_path = f"{base_dir}/{linux_file}"
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r") as f:
+                        result[dict_key] = int(f.read().strip()) / 1000000
+                except Exception:
+                    pass
 
-        # Ambil data dari dataclass menjadi dictionary Python
-        params = asdict(sub_state)
+        if os.path.exists(tunables_dir):
+            for linux_file, dict_key in tunables_map.items():
+                file_path = f"{tunables_dir}/{linux_file}"
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, "r") as f:
+                            raw_val = f.read().strip()
 
-        for key, val in params.items():
-            if key in translation_map:
-                # Jangan kirim field 'maxFreq' atau 'minFreq' ke fungsi ini jika ikut terbawa di dataclass
-                if key in ["maxFreq", "minFreq"]:
-                    continue
+                        if linux_file.startswith(("ignore_", "io_")):
+                            result[dict_key] = (
+                                raw_val == "1"
+                            )
+                        elif "." in raw_val:
+                            result[dict_key] = float(raw_val)
+                        else:
+                            result[dict_key] = int(raw_val)
+                    except Exception:
+                        continue
 
-                linux_file = translation_map[key]
-                path = f"{tunables_dir}/{linux_file}"
+        # 3. Kasus Khusus untuk Governor Userspace
+        if governor == "userspace":
+            setspeed_file = f"{base_dir}/scaling_setspeed"
+            if os.path.exists(setspeed_file):
+                try:
+                    with open(setspeed_file, "r") as f:
+                        raw_speed = f.read().strip()
+                    if "unsupported" not in raw_speed and raw_speed.isdigit():
+                        result["fixFreq"] = int(raw_speed) / 1000000
+                    else:
+                        result["fixFreq"] = 0.0
+                except Exception:
+                    pass
 
-                # Konversi data boolean (True/False) menjadi (1/0) khas Linux
-                if isinstance(val, bool):
-                    val = 1 if val else 0
+        return result
 
-                # Hanya lewati jika nilainya murni None (bukan 0 atau False)
-                if val is None:
-                    continue
-
-                self.write_sys_file(path, str(val))
-
-
-    def apply_cpu_governor(self) -> dict | None:
+    # Ganti Mode Governor
+    def apply_cpu_governor(self) -> bool | None:
         cpu = app_state.cpu
         gov_name = cpu.governor
-        cmd = (
-            f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor"
-        )
+        cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor"
 
         try:
             # 1. Terapkan mode governor utama
@@ -111,30 +117,8 @@ class LinuxCPUController:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            print(f"✓ Governor successfully changed to {gov_name.upper()}!")
-
-            # 2. Terapkan parameter tunables & limit frekuensi (jika ada)
-            if hasattr(cpu, gov_name):
-                sub_state = getattr(cpu, gov_name)
-                self.apply_governor_tunables(gov_name, sub_state)
-
-                if hasattr(sub_state, "maxFreq") and getattr(sub_state, "maxFreq") > 0:
-                    max_khz = int(sub_state.maxFreq * 1000000)
-                    self.write_sys_file(
-                        f"{self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq", str(max_khz)
-                    )
-
-                if hasattr(sub_state, "minFreq") and getattr(sub_state, "minFreq") > 0:
-                    min_khz = int(sub_state.minFreq * 1000000)
-                    self.write_sys_file(
-                        f"{self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_min_freq", str(min_khz)
-                    )
-
-            # 3. REVISI: Baca kedua nilai sekaligus dari hardware Linux
-            return {
-                "max": self.read_freq_file("scaling_max_freq"),
-                "min": self.read_freq_file("scaling_min_freq"),
-            }
+            logging.info(f"✓ Governor successfully changed to {gov_name.upper()}!")
+            return True
 
         except subprocess.CalledProcessError as e:
             logging.error(f"Gagal menerapkan governor. Error: {e.stderr.strip()}")
