@@ -161,6 +161,19 @@ class LinuxCPUController:
         }
         
         try:
+            if governor == "powersave" and "minFreq" in params and params["minFreq"] is not None:
+                try:
+                    freq_cmd = f"cat {self.SYS_CPU_BASE}/cpu0/cpufreq/scaling_available_frequencies"
+                    freq_res = subprocess.run(freq_cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    avail_frequencies = [int(f) for f in freq_res.stdout.split() if f.isdigit()]
+                    
+                    if avail_frequencies:
+                        max_possible_raw = max(avail_frequencies)
+                        max_cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo {max_possible_raw} | sudo tee "$file"; done'
+                        subprocess.run(max_cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                except Exception as e:
+                    print(f"[Warning] Gagal membuka jalur max_freq untuk powersave: {e}")
+            
             # LOOP 1: Mengubah Frekuensi untuk SEMUA CORE (cpu*)
             for linux_file, dict_key in freq_map.items():
                 if dict_key in params and params[dict_key] is not None:
