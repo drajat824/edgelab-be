@@ -39,34 +39,35 @@ class GovernorParamsInput(BaseModel):
 @app.get("/api/cpu/governor")
 def get_current_hardware_status():
     try:
-        gov_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-        if os.path.exists(gov_path):
-            with open(gov_path, "r") as f:
-                governor = f.read().strip()
-        else:
+        governors_dict = cpu_controller.get_governors()
+        governor = governors_dict.get("cpu0", "powersave")
+        
+        if "Error" in governor or "Permission" in governor:
             governor = app_state.cpu.governor
+        else:
+            app_state.cpu.governor = governor
 
         hardware_data = cpu_controller.get_governor_state()
-        app_state.cpu.governor = governor
         sub_state = getattr(app_state.cpu, governor, None)
-        if sub_state:
+        if sub_state and hardware_data:
             for key, val in hardware_data.items():
                 if hasattr(sub_state, key):
                     setattr(sub_state, key, val)
-
-        return {"status": "success", "governor": governor, governor: hardware_data}
+        return {
+            "status": "success", 
+            "governor": governor, 
+            governor: hardware_data
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # UPDATE GOVERNOR STATUS
 @app.post("/api/cpu/governor")
 def handle_governor_state(payload: GovernorInput):
     try:
-        governor = payload.governor
-        app_state.cpu.governor = governor
-        current_freq = cpu_controller.apply_cpu_governor()
+        governor = payload.governor        
+        current_freq = cpu_controller.apply_cpu_governor(governor)
         if current_freq is None:
             raise Exception(
                 "Gagal membaca atau menerapkan konfigurasi ke hardware Linux"
@@ -78,7 +79,8 @@ def handle_governor_state(payload: GovernorInput):
             for key, val in hardware_data.items():
                 if hasattr(sub_state, key):
                     setattr(sub_state, key, val)
-
+                    
+        app_state.cpu.governor = governor
         return {"status": "success", "governor": governor, governor: hardware_data}
 
     except Exception as e:
@@ -89,6 +91,7 @@ def handle_governor_state(payload: GovernorInput):
 @app.post("/api/cpu/governor/params")
 def handle_governor_params(payload: GovernorParamsInput):
     try:
+        get_current_hardware_status()
         governor = app_state.cpu.governor
         incoming_payload = getattr(payload, governor, None)
         incoming_params = {}

@@ -40,21 +40,16 @@ class LinuxCPUController:
 
     # Get Governor Status
     def get_governors(self) -> dict:
-        governors = {}
-        # Mencari semua file scaling_governor untuk setiap core
-        files = glob.glob(f"{self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor")
-
-        for file_path in sorted(files):
-            core_name = file_path.split("/")[-3]
-            try:
-                with open(file_path, "r") as f:
-                    governors[core_name] = f.read().strip()
-            except PermissionError:
-                governors[core_name] = "Permission Denied"
-            except Exception as e:
-                governors[core_name] = f"Error: {e}"
-
-        return governors
+        gov_file = f"{self.SYS_CPU_BASE}/cpu0/cpufreq/scaling_governor"
+        
+        try:
+            with open(gov_file, "r") as f:
+                current_gov = f.read().strip()
+            return {"cpu0": current_gov}
+        except PermissionError:
+            return {"cpu0": "Permission Denied"}
+        except Exception as e:
+            return {"cpu0": f"Error: {e}"}
 
     # Get Mode Governor
     def get_governor_state(self) -> dict:
@@ -125,13 +120,24 @@ class LinuxCPUController:
         return result
 
     # Ganti Mode Governor
-    def apply_cpu_governor(self) -> bool | None:
-        cpu = app_state.cpu
-        gov_name = cpu.governor
+    def apply_cpu_governor(self, gov_name: str) -> bool | None:
         cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor"
+        ALLOWED_GOVERNORS = [
+            "conservative", 
+            "ondemand", 
+            "userspace", 
+            "powersave", 
+            "performance", 
+            "schedutil"
+        ]
+        
+        if gov_name not in ALLOWED_GOVERNORS:
+            logging.error(
+                f"Gagal menerapkan governor: Nama governor '{gov_name}' tidak valid/tidak didukung oleh sistem!"
+            )
+            return None
 
         try:
-            # 1. Terapkan mode governor utama
             self.execute_cmd(cmd)
             logging.info(f"✓ Governor successfully changed to {gov_name.upper()}!")
             return True
@@ -183,7 +189,6 @@ class LinuxCPUController:
             for linux_file, dict_key in freq_map.items():
                 if dict_key in params and params[dict_key] is not None:
                     raw_val = int(params[dict_key] * 1000000)
-                    # FIX: Gunakan self.SYS_CPU_BASE/cpu* bukan base_dir
                     cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/{linux_file}; do echo {raw_val} | sudo tee "$file"; done'
                     self.execute_cmd(cmd)
 
@@ -205,10 +210,10 @@ class LinuxCPUController:
             # Kondisi Khusus Userspace
             if (
                 governor == "userspace"
-                and "fixedFrequency" in params
-                and params["fixedFrequency"] is not None
+                and "fixFreq" in params
+                and params["fixFreq"] is not None
             ):
-                raw_speed = int(params["fixedFrequency"] * 1000000)
+                raw_speed = int(params["fixFreq"] * 1000000)
                 cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_setspeed; do echo {raw_speed} | sudo tee "$file"; done'
                 self.execute_cmd(cmd)
 
