@@ -75,9 +75,7 @@ class LinuxCPUController:
                             raw_val = f.read().strip()
 
                         if linux_file.startswith(("ignore_", "io_")):
-                            result[dict_key] = (
-                                raw_val == "1"
-                            )
+                            result[dict_key] = raw_val == "1"
                         elif "." in raw_val:
                             result[dict_key] = float(raw_val)
                         else:
@@ -123,3 +121,54 @@ class LinuxCPUController:
         except subprocess.CalledProcessError as e:
             logging.error(f"Gagal menerapkan governor. Error: {e.stderr.strip()}")
             return None
+
+    def apply_governor_params(self, governor: str, params: dict) -> bool:
+        freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
+        tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
+        tunables_map = {
+            "up_threshold": "thresholdUp",
+            "down_threshold": "thresholdDown",
+            "sampling_rate": "samplingRate",
+            "sampling_down_factor": "samplingDownFactor",
+            "freq_step": "frequencyStep",
+            "rate_limit_us": "rateLimit",
+            "powersave_bias": "powerBias",
+            "ignore_nice_load": "isIgnoreNice",
+            "io_is_busy": "isIoBusy",
+        }
+        
+        try:
+            # LOOP 1: Mengubah Frekuensi untuk SEMUA CORE (cpu*)
+            for linux_file, dict_key in freq_map.items():
+                if dict_key in params and params[dict_key] is not None:
+                    raw_val = int(params[dict_key] * 1000000)
+                    # FIX: Gunakan self.SYS_CPU_BASE/cpu* bukan base_dir
+                    cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/{linux_file}; do echo {raw_val} | sudo tee "$file"; done'
+                    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    
+            # LOOP 2: Mengubah Tunables Governor Internal
+            for linux_file, dict_key in tunables_map.items():
+                if dict_key in params and params[dict_key] is not None:
+                    val_from_frontend = params[dict_key]
+                    
+                    if isinstance(val_from_frontend, bool):
+                        raw_val = "1" if val_from_frontend else "0"
+                    else:
+                        raw_val = int(val_from_frontend)
+                    
+                    file_path = f"{tunables_dir}/{linux_file}"
+                    if os.path.exists(file_path):
+                        cmd = f'echo {raw_val} | sudo tee {file_path}'
+                        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Kondisi Khusus Userspace
+            if governor == "userspace" and "fixedFrequency" in params and params["fixedFrequency"] is not None:
+                raw_speed = int(params["fixedFrequency"] * 1000000)
+                cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_setspeed; do echo {raw_speed} | sudo tee "$file"; done'
+                subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+            return True
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Gagal menulis parameter ke hardware. Error: {e.stderr.strip()}")
+            return False

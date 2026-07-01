@@ -1,9 +1,9 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os
-from dataclasses import dataclass, field, asdict
-from typing import Any
+from typing import Optional
+from dataclasses import asdict
 
 # Import penampung state internal dan controller
 from .state.app_state import app_state
@@ -23,6 +23,16 @@ app.add_middleware(
 
 class GovernorInput(BaseModel):
     governor: str
+
+
+class GovernorParamsInput(BaseModel):
+    performance: Optional[dict] = None
+    powersave: Optional[dict] = None
+    ondemand: Optional[dict] = None
+    conservative: Optional[dict] = None
+    schedutil: Optional[dict] = None
+    userspace: Optional[dict] = None
+
 
 # GET GOVERNOR STATUS
 @app.get("/api/cpu/governor")
@@ -74,8 +84,40 @@ def handle_governor_state(payload: GovernorInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# UPDATE GOVERNOR PARAMETER
+@app.post("/api/cpu/governor/params")
+def handle_governor_params(payload: GovernorParamsInput):
+    try:
+        governor = app_state.cpu.governor
+        incoming_payload = getattr(payload, governor, None)
+
+        if incoming_payload:
+            # FIX: Pastikan data berupa dict murni agar terbaca di loop kriteria 'in params'
+            if hasattr(incoming_payload, "model_dump"):
+                incoming_params = incoming_payload.model_dump(exclude_unset=True)
+            else:
+                incoming_params = dict(incoming_payload)
+
+            # Terapkan perubahan ke sistem Linux
+            cpu_controller.apply_governor_params(governor, incoming_params)
+
+            # Simpan data yang dikirim ke app_state lokal
+            sub_state = getattr(app_state.cpu, governor, None)
+            if sub_state:
+                for key, val in incoming_params.items():
+                    if hasattr(sub_state, key):
+                        setattr(sub_state, key, val)
+
+        # Ambil data real-time pasca-penulisan dari Linux Kernel
+        hardware_data = cpu_controller.get_governor_state(governor)
+        return {"status": "success", "governor": governor, governor: hardware_data}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # CEK LOG
-@app.get("/api/state")
+@app.get("/log")
 def get_full_app_state():
     """
     Endpoint khusus untuk debugging/mengecek seluruh isi app_state saat ini.
