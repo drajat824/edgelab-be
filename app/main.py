@@ -1,4 +1,5 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -45,7 +46,7 @@ def get_current_hardware_status():
         else:
             governor = app_state.cpu.governor
 
-        hardware_data = cpu_controller.get_governor_state(governor)
+        hardware_data = cpu_controller.get_governor_state()
         app_state.cpu.governor = governor
         sub_state = getattr(app_state.cpu, governor, None)
         if sub_state:
@@ -71,7 +72,7 @@ def handle_governor_state(payload: GovernorInput):
                 "Gagal membaca atau menerapkan konfigurasi ke hardware Linux"
             )
 
-        hardware_data = cpu_controller.get_governor_state(governor)
+        hardware_data = cpu_controller.get_governor_state()
         sub_state = getattr(app_state.cpu, governor, None)
         if sub_state:
             for key, val in hardware_data.items():
@@ -90,28 +91,53 @@ def handle_governor_params(payload: GovernorParamsInput):
     try:
         governor = app_state.cpu.governor
         incoming_payload = getattr(payload, governor, None)
+        incoming_params = {}
 
         if incoming_payload:
-            # FIX: Pastikan data berupa dict murni agar terbaca di loop kriteria 'in params'
             if hasattr(incoming_payload, "model_dump"):
                 incoming_params = incoming_payload.model_dump(exclude_unset=True)
             else:
                 incoming_params = dict(incoming_payload)
 
-            # Terapkan perubahan ke sistem Linux
-            cpu_controller.apply_governor_params(governor, incoming_params)
+        # Validasi: Jika payload kosong, kembalikan error 400
+        if not incoming_params:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Gagal memproses params. Governor aktif saat ini adalah '{governor}', tetapi payload untuk '{governor}' kosong atau tidak dikirim.",
+            )
+        
+        # Validasi: Pastikan semua key di incoming_params valid untuk governor yang aktif
+        sub_state = getattr(app_state.cpu, governor, None)
+        if sub_state:
+            for key in incoming_params.keys():
+                if not hasattr(sub_state, key):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Parameter '{key}' tidak valid untuk governor '{governor}'.",
+                    )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Governor '{governor}' tidak terdaftar di sistem aplikasi.",
+            )
 
-            # Simpan data yang dikirim ke app_state lokal
-            sub_state = getattr(app_state.cpu, governor, None)
-            if sub_state:
-                for key, val in incoming_params.items():
-                    if hasattr(sub_state, key):
-                        setattr(sub_state, key, val)
+        # Terapkan perubahan ke sistem Linux
+        cpu_controller.apply_governor_params(governor, incoming_params)
+
+        # Simpan data yang dikirim ke app_state lokal
+        sub_state = getattr(app_state.cpu, governor, None)
+        if sub_state:
+            for key, val in incoming_params.items():
+                if hasattr(sub_state, key):
+                    setattr(sub_state, key, val)
 
         # Ambil data real-time pasca-penulisan dari Linux Kernel
-        hardware_data = cpu_controller.get_governor_state(governor)
+        hardware_data = cpu_controller.get_governor_state()
         return {"status": "success", "governor": governor, governor: hardware_data}
 
+    # Tangkap HTTPException dari validasi di atas agar tidak berubah jadi error 500
+    except HTTPException as http_err:
+        raise http_err
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

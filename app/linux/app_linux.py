@@ -1,5 +1,6 @@
 import os
 import time
+import glob
 import logging
 import subprocess
 from dataclasses import asdict
@@ -34,11 +35,32 @@ class LinuxCPUController:
             logging.error(f"Error saat menulis ke {path}: {e}")
             return False
 
+    # Get Governor Status
+    def get_governors(self) -> dict:
+        governors = {}
+        # Mencari semua file scaling_governor untuk setiap core
+        files = glob.glob(f"{self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor")
+        
+        for file_path in sorted(files):
+            core_name = file_path.split('/')[-3] 
+            try:
+                with open(file_path, 'r') as f:
+                    governors[core_name] = f.read().strip()
+            except PermissionError:
+                governors[core_name] = "Permission Denied"
+            except Exception as e:
+                governors[core_name] = f"Error: {e}"
+                
+        return governors
+    
     # Get Mode Governor
-    def get_governor_state(self, governor: str) -> dict:
+    def get_governor_state(self) -> dict:
         result = {}
         base_dir = f"{self.SYS_CPU_BASE}/cpu0/cpufreq"
         freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
+        governors_dict = self.get_governors()
+        governor = governors_dict.get("cpu0", "powersave")  
+        
         tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
         tunables_map = {
             "up_threshold": "thresholdUp",
@@ -122,6 +144,7 @@ class LinuxCPUController:
             logging.error(f"Gagal menerapkan governor. Error: {e.stderr.strip()}")
             return None
 
+    # Ganti Parameter Governor 
     def apply_governor_params(self, governor: str, params: dict) -> bool:
         freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
         tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
