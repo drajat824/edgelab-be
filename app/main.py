@@ -125,7 +125,12 @@ def handle_governor_params(payload: GovernorParamsInput):
             )
 
         # Terapkan perubahan ke sistem Linux
-        cpu_controller.apply_governor_params(governor, incoming_params)
+        success = cpu_controller.apply_governor_params(governor, incoming_params)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="minFreq tidak boleh lebih besar dari maxFreq."
+            )
 
         # Simpan data yang dikirim ke app_state lokal
         sub_state = getattr(app_state.cpu, governor, None)

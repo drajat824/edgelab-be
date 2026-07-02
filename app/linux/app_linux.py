@@ -13,6 +13,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 P = ParamSpec("P")
 SUDO_PASSWORD = os.getenv("batman123")
 
+
 class LinuxCPUController:
     SYS_CPU_BASE = "/sys/devices/system/cpu"
 
@@ -41,7 +42,7 @@ class LinuxCPUController:
     # Get Governor Status
     def get_governors(self) -> dict:
         gov_file = f"{self.SYS_CPU_BASE}/cpu0/cpufreq/scaling_governor"
-        
+
         try:
             with open(gov_file, "r") as f:
                 current_gov = f.read().strip()
@@ -123,14 +124,14 @@ class LinuxCPUController:
     def apply_cpu_governor(self, gov_name: str) -> bool | None:
         cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor"
         ALLOWED_GOVERNORS = [
-            "conservative", 
-            "ondemand", 
-            "userspace", 
-            "powersave", 
-            "performance", 
-            "schedutil"
+            "conservative",
+            "ondemand",
+            "userspace",
+            "powersave",
+            "performance",
+            "schedutil",
         ]
-        
+
         if gov_name not in ALLOWED_GOVERNORS:
             logging.error(
                 f"Gagal menerapkan governor: Nama governor '{gov_name}' tidak valid/tidak didukung oleh sistem!"
@@ -163,7 +164,6 @@ class LinuxCPUController:
         }
 
         try:
-
             # Menaikan max_freq ke nilai maksimum yang tersedia jika governor adalah powersave dan minFreq diatur
             if (
                 governor == "powersave"
@@ -184,6 +184,30 @@ class LinuxCPUController:
                     print(
                         f"[Warning] Gagal membuka jalur max_freq untuk powersave: {e}"
                     )
+
+            else:
+                current_sub_state = getattr(app_state.cpu, governor, None)
+                target_min = (
+                    params.get("minFreq")
+                    if "minFreq" in params
+                    else getattr(current_sub_state, "minFreq", None)
+                )
+                target_max = (
+                    params.get("maxFreq")
+                    if "maxFreq" in params
+                    else getattr(current_sub_state, "maxFreq", None)
+                )
+                
+                print("params:", params)
+                print("target_min:", target_min)
+                print("target_max:", target_max)
+                
+                if target_min is not None and target_max is not None:
+                    if target_min > target_max:
+                        logging.error(
+                            f"Validation Error: Pada governor '{governor}', minFreq ({target_min} GHz) tidak boleh lebih besar dari maxFreq ({target_max} GHz)!"
+                        )
+                        return False
 
             # LOOP 1: Mengubah Frekuensi untuk SEMUA CORE (cpu*)
             for linux_file, dict_key in freq_map.items():
