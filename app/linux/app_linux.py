@@ -1,18 +1,13 @@
 from dotenv import load_dotenv
 import os
-import time
-import glob
 import logging
 import subprocess
-from dataclasses import asdict
 from ..state.app_state import app_state
-from functools import wraps
-from typing import ParamSpec
 
+# Mengatur format logging agar seragam
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 load_dotenv()
 
-P = ParamSpec("P")
 SUDO_PASSWORD = os.getenv("SUDO_PASSWORD")
 
 
@@ -34,8 +29,8 @@ class LinuxCPUController:
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
-            print(f"Error saat mengeksekusi: {cmd_string}")
-            print(f"Stderr: {e.stderr.strip()}")
+            logging.error(f"Error saat mengeksekusi: {cmd_string}")
+            logging.error(f"Stderr: {e.stderr.strip()}")
             return ""
 
     # Get Governor Status
@@ -121,7 +116,6 @@ class LinuxCPUController:
 
     # Ganti Mode Governor
     def apply_cpu_governor(self, gov_name: str) -> bool | None:
-        cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor > /dev/null"
         ALLOWED_GOVERNORS = [
             "conservative",
             "ondemand",
@@ -137,13 +131,16 @@ class LinuxCPUController:
             )
             return None
 
+        # Perbaikan: Menggunakan skrip loop sh -c untuk menghindari crash pipa '|' dengan sudo -S
+        cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor; do echo "{gov_name}" > "$file"; done\''
+
         try:
             self.execute_cmd(cmd)
             logging.info(f"✓ Governor successfully changed to {gov_name.upper()}!")
             return True
 
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Gagal menerapkan governor. Error: {e.stderr.strip()}")
+        except Exception as e:
+            logging.error(f"Gagal menerapkan governor. Error: {e}")
             return None
 
     # Ganti Parameter Governor
@@ -180,8 +177,8 @@ class LinuxCPUController:
                         max_cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo "{max_possible_raw}" > "$file"; done\''
                         self.execute_cmd(max_cmd)
                 except Exception as e:
-                    print(
-                        f"[Warning] Gagal membuka jalur max_freq untuk powersave: {e}"
+                    logging.warning(
+                        f"Gagal membuka jalur max_freq untuk powersave: {e}"
                     )
 
             else:
@@ -223,7 +220,8 @@ class LinuxCPUController:
 
                     file_path = f"{tunables_dir}/{linux_file}"
                     if os.path.exists(file_path):
-                        cmd = f"echo {raw_val} | sudo tee {file_path} > /dev/null"
+                        # Perbaikan: Menggunakan sudo sh -c langsung tanpa tee/pipe agar input password stabil
+                        cmd = f'sudo sh -c \'echo "{raw_val}" > "{file_path}"\''
                         self.execute_cmd(cmd)
 
             # Kondisi Khusus Userspace
@@ -238,8 +236,6 @@ class LinuxCPUController:
 
             return True
 
-        except subprocess.CalledProcessError as e:
-            logging.error(
-                f"Gagal menulis parameter ke hardware. Error: {e.stderr.strip()}"
-            )
+        except Exception as e:
+            logging.error(f"Gagal menulis parameter ke hardware. Error: {e}")
             return False
