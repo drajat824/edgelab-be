@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import os
 import time
 import glob
@@ -9,35 +10,33 @@ from functools import wraps
 from typing import ParamSpec
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+load_dotenv()
 
 P = ParamSpec("P")
-SUDO_PASSWORD = os.getenv("batman123")
+SUDO_PASSWORD = os.getenv("SUDO_PASSWORD")
 
 
 class LinuxCPUController:
     SYS_CPU_BASE = "/sys/devices/system/cpu"
 
-    def execute_cmd(self, cmd: str) -> str:
-        is_sudo = cmd.strip().startswith("sudo")
-        input_data = f"{SUDO_PASSWORD}\n" if is_sudo else None
+    def execute_cmd(self, cmd_string: str) -> str:
+        if "sudo " in cmd_string and "-S" not in cmd_string:
+            cmd_string = cmd_string.replace("sudo ", "sudo -S ")
 
         try:
             result = subprocess.run(
-                cmd,
+                cmd_string,
                 shell=True,
+                input=f"{SUDO_PASSWORD}\n" if SUDO_PASSWORD else None,
+                text=True,
+                capture_output=True,
                 check=True,
-                input=input_data,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,  # Memastikan semua output otomatis dikonversi dari bytes ke string murni
             )
             return result.stdout.strip()
-
         except subprocess.CalledProcessError as e:
-            # Mengembalikan stderr dari sistem Linux agar debugging mudah jika command gagal
-            raise RuntimeError(
-                f"Gagal mengeksekusi command: {cmd}. Error: {e.stderr.strip()}"
-            )
+            print(f"Error saat mengeksekusi: {cmd_string}")
+            print(f"Stderr: {e.stderr.strip()}")
+            return ""
 
     # Get Governor Status
     def get_governors(self) -> dict:
@@ -122,7 +121,7 @@ class LinuxCPUController:
 
     # Ganti Mode Governor
     def apply_cpu_governor(self, gov_name: str) -> bool | None:
-        cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor"
+        cmd = f"echo {gov_name} | sudo tee {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor > /dev/null"
         ALLOWED_GOVERNORS = [
             "conservative",
             "ondemand",
@@ -178,7 +177,7 @@ class LinuxCPUController:
                     ]
                     if avail_frequencies:
                         max_possible_raw = max(avail_frequencies)
-                        max_cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo {max_possible_raw} | sudo tee "$file"; done'
+                        max_cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo "{max_possible_raw}" > "$file"; done\''
                         self.execute_cmd(max_cmd)
                 except Exception as e:
                     print(
@@ -197,11 +196,7 @@ class LinuxCPUController:
                     if "maxFreq" in params
                     else getattr(current_sub_state, "maxFreq", None)
                 )
-                
-                print("params:", params)
-                print("target_min:", target_min)
-                print("target_max:", target_max)
-                
+
                 if target_min is not None and target_max is not None:
                     if target_min > target_max:
                         logging.error(
@@ -213,7 +208,7 @@ class LinuxCPUController:
             for linux_file, dict_key in freq_map.items():
                 if dict_key in params and params[dict_key] is not None:
                     raw_val = int(params[dict_key] * 1000000)
-                    cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/{linux_file}; do echo {raw_val} | sudo tee "$file"; done'
+                    cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/{linux_file}; do echo "{raw_val}" > "$file"; done\''
                     self.execute_cmd(cmd)
 
             # LOOP 2: Mengubah Tunables Governor Internal
@@ -228,7 +223,7 @@ class LinuxCPUController:
 
                     file_path = f"{tunables_dir}/{linux_file}"
                     if os.path.exists(file_path):
-                        cmd = f"echo {raw_val} | sudo tee {file_path}"
+                        cmd = f"echo {raw_val} | sudo tee {file_path} > /dev/null"
                         self.execute_cmd(cmd)
 
             # Kondisi Khusus Userspace
@@ -238,7 +233,7 @@ class LinuxCPUController:
                 and params["fixFreq"] is not None
             ):
                 raw_speed = int(params["fixFreq"] * 1000000)
-                cmd = f'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_setspeed; do echo {raw_speed} | sudo tee "$file"; done'
+                cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_setspeed; do echo "{raw_speed}" > "$file"; done\''
                 self.execute_cmd(cmd)
 
             return True
