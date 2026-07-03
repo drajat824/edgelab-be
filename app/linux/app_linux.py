@@ -46,15 +46,27 @@ class LinuxCPUController:
         except Exception as e:
             return {"cpu0": f"Error: {e}"}
 
-    # Get Mode Governor
+    # Get Mode Governor & Global Frequencies
     def get_governor_state(self) -> dict:
         result = {}
         base_dir = f"{self.SYS_CPU_BASE}/cpu0/cpufreq"
+
+        # 1. Ambil Frekuensi Global (Sekarang dibaca di governor apapun)
         freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
+        for linux_file, dict_key in freq_map.items():
+            file_path = f"{base_dir}/{linux_file}"
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r") as f:
+                        result[dict_key] = int(f.read().strip()) / 1000000
+                except Exception:
+                    pass
+
+        # 2. Ambil Parameter Tunables Spesifik Governor yang Aktif
         governors_dict = self.get_governors()
         governor = governors_dict.get("cpu0", "powersave")
-
         tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
+
         tunables_map = {
             "up_threshold": "thresholdUp",
             "down_threshold": "thresholdDown",
@@ -66,20 +78,6 @@ class LinuxCPUController:
             "ignore_nice_load": "isIgnoreNice",
             "io_is_busy": "isIoBusy",
         }
-
-        for linux_file, dict_key in freq_map.items():
-            if governor == "performance" and dict_key == "minFreq":
-                continue
-            if governor == "powersave" and dict_key == "maxFreq":
-                continue
-
-            file_path = f"{base_dir}/{linux_file}"
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, "r") as f:
-                        result[dict_key] = int(f.read().strip()) / 1000000
-                except Exception:
-                    pass
 
         if os.path.exists(tunables_dir):
             for linux_file, dict_key in tunables_map.items():
@@ -106,9 +104,9 @@ class LinuxCPUController:
                     with open(setspeed_file, "r") as f:
                         raw_speed = f.read().strip()
                     if "unsupported" not in raw_speed and raw_speed.isdigit():
-                        result["fixFreq"] = int(raw_speed) / 1000000
+                        result["fixedFrequency"] = int(raw_speed) / 1000000
                     else:
-                        result["fixFreq"] = 0.0
+                        result["fixedFrequency"] = 0.0
                 except Exception:
                     pass
 
@@ -131,7 +129,6 @@ class LinuxCPUController:
             )
             return None
 
-        # Perbaikan: Menggunakan skrip loop sh -c untuk menghindari crash pipa '|' dengan sudo -S
         cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_governor; do echo "{gov_name}" > "$file"; done\''
 
         try:
@@ -143,9 +140,8 @@ class LinuxCPUController:
             logging.error(f"Gagal menerapkan governor. Error: {e}")
             return None
 
-    # Ganti Parameter Governor
+    # Ganti Parameter Governor & Global Frequencies
     def apply_governor_params(self, governor: str, params: dict) -> bool:
-        freq_map = {"scaling_max_freq": "maxFreq", "scaling_min_freq": "minFreq"}
         tunables_dir = f"{self.SYS_CPU_BASE}/cpufreq/{governor}"
         tunables_map = {
             "up_threshold": "thresholdUp",
@@ -160,55 +156,7 @@ class LinuxCPUController:
         }
 
         try:
-            # Menaikan max_freq ke nilai maksimum yang tersedia jika governor adalah powersave dan minFreq diatur
-            if (
-                governor == "powersave"
-                and "minFreq" in params
-                and params["minFreq"] is not None
-            ):
-                try:
-                    freq_cmd = f"cat {self.SYS_CPU_BASE}/cpu0/cpufreq/scaling_available_frequencies"
-                    freq_res = self.execute_cmd(freq_cmd)
-                    avail_frequencies = [
-                        int(f) for f in freq_res.split() if f.isdigit()
-                    ]
-                    if avail_frequencies:
-                        max_possible_raw = max(avail_frequencies)
-                        max_cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo "{max_possible_raw}" > "$file"; done\''
-                        self.execute_cmd(max_cmd)
-                except Exception as e:
-                    logging.warning(
-                        f"Gagal membuka jalur max_freq untuk powersave: {e}"
-                    )
-
-            else:
-                current_sub_state = getattr(app_state.cpu, governor, None)
-                target_min = (
-                    params.get("minFreq")
-                    if "minFreq" in params
-                    else getattr(current_sub_state, "minFreq", None)
-                )
-                target_max = (
-                    params.get("maxFreq")
-                    if "maxFreq" in params
-                    else getattr(current_sub_state, "maxFreq", None)
-                )
-
-                if target_min is not None and target_max is not None:
-                    if target_min > target_max:
-                        logging.error(
-                            f"Validation Error: Pada governor '{governor}', minFreq ({target_min} GHz) tidak boleh lebih besar dari maxFreq ({target_max} GHz)!"
-                        )
-                        return False
-
-            # LOOP 1: Mengubah Frekuensi untuk SEMUA CORE (cpu*)
-            for linux_file, dict_key in freq_map.items():
-                if dict_key in params and params[dict_key] is not None:
-                    raw_val = int(params[dict_key] * 1000000)
-                    cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/{linux_file}; do echo "{raw_val}" > "$file"; done\''
-                    self.execute_cmd(cmd)
-
-            # LOOP 2: Mengubah Tunables Governor Internal
+            # LOOP: Mengubah Tunables Governor Internal
             for linux_file, dict_key in tunables_map.items():
                 if dict_key in params and params[dict_key] is not None:
                     val_from_frontend = params[dict_key]
@@ -220,22 +168,54 @@ class LinuxCPUController:
 
                     file_path = f"{tunables_dir}/{linux_file}"
                     if os.path.exists(file_path):
-                        # Perbaikan: Menggunakan sudo sh -c langsung tanpa tee/pipe agar input password stabil
                         cmd = f'sudo sh -c \'echo "{raw_val}" > "{file_path}"\''
                         self.execute_cmd(cmd)
 
-            # Kondisi Khusus Userspace
+            # Kondisi Khusus Userspace (tetap di sini karena bersifat tuning parameter)
             if (
                 governor == "userspace"
-                and "fixFreq" in params
-                and params["fixFreq"] is not None
+                and "fixedFrequency" in params
+                and params["fixedFrequency"] is not None
             ):
-                raw_speed = int(params["fixFreq"] * 1000000)
+                raw_speed = int(params["fixedFrequency"] * 1000000)
                 cmd = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_setspeed; do echo "{raw_speed}" > "$file"; done\''
                 self.execute_cmd(cmd)
 
             return True
 
         except Exception as e:
-            logging.error(f"Gagal menulis parameter ke hardware. Error: {e}")
+            logging.error(f"Gagal menulis parameter governor ke hardware. Error: {e}")
+            return False
+
+    # FUNGSI BARU: KHUSUS UNTUK UPDATE FREKUENSI GLOBAL
+    def apply_cpu_frequencies(
+        self, min_freq: float | None, max_freq: float | None
+    ) -> bool:
+        try:
+            # Mengambil data pembanding dari state jika salah satu parameter tidak dikirim
+            target_min = min_freq if min_freq is not None else app_state.cpu.minFreq
+            target_max = max_freq if max_freq is not None else app_state.cpu.maxFreq
+
+            # Validasi aturan dasar hardware
+            if target_min > target_max:
+                logging.error(
+                    f"Validation Error: minFreq ({target_min} GHz) tidak boleh lebih besar dari maxFreq ({target_max} GHz)!"
+                )
+                return False
+
+            # Tulis minFreq ke sistem jika ada di payload
+            if min_freq is not None:
+                raw_min = int(min_freq * 1000000)
+                cmd_min = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_min_freq; do echo "{raw_min}" > "$file"; done\''
+                self.execute_cmd(cmd_min)
+
+            # Tulis maxFreq ke sistem jika ada di payload
+            if max_freq is not None:
+                raw_max = int(max_freq * 1000000)
+                cmd_max = f'sudo sh -c \'for file in {self.SYS_CPU_BASE}/cpu*/cpufreq/scaling_max_freq; do echo "{raw_max}" > "$file"; done\''
+                self.execute_cmd(cmd_max)
+
+            return True
+        except Exception as e:
+            logging.error(f"Gagal menulis frekuensi ke hardware. Error: {e}")
             return False
