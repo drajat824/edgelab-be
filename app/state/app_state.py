@@ -5,7 +5,6 @@ from typing import List
 @dataclass
 class OndemandState:
     thresholdUp: int = 0
-    thresholdDown: int = 0
     samplingRate: int = 0
     samplingDownFactor: int = 0
     isIgnoreNice: bool = False
@@ -37,7 +36,7 @@ class UserspaceState:
 
 @dataclass
 class CPUState:
-    governor: str = "powersave"
+    governor: str = "ondemand"
     maxFreq: float = 0
     minFreq: float = 0
     thread: int = 4

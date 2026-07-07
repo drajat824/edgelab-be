@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import os
 import logging
 import subprocess
+import psutil
 from ..state.app_state import app_state
 
 # Uniform logging format
@@ -240,3 +241,28 @@ class LinuxCPUController:
         except Exception as e:
             logging.error(f"Failed to write CPU frequencies to hardware. Error: {e}")
             return False
+
+    # ==== WEBSOCKET =====
+
+    def get_cpu_utilization(self, max_cores: int = 4) -> dict:
+        cores_usage = psutil.cpu_percent(interval=None, percpu=True)
+        cores_usage = cores_usage[:max_cores]
+        cores_usage = [round(x) for x in cores_usage]
+        avg_usage = round(sum(cores_usage) / len(cores_usage)) if cores_usage else 0
+        return {"average": avg_usage, "cores": cores_usage}
+    
+    def get_cpu_status(self) -> dict:
+        freq_cmd = "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+        freq_raw = self.execute_cmd(freq_cmd)
+        if freq_raw and freq_raw.isdigit():
+            freq_ghz = f"{float(freq_raw) / 1000000:.1f} GHz"
+        else:
+            freq_ghz = "0.0 GHz"
+        temp_cmd = "cat /sys/class/thermal/thermal_zone0/temp"
+        temp_raw = self.execute_cmd(temp_cmd)
+
+        if temp_raw and temp_raw.isdigit():
+            temp_c = round(float(temp_raw) / 1000, 1)
+        else:
+            temp_c = 0.0
+        return {"frequency": freq_ghz, "temperature": temp_c}

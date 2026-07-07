@@ -1,10 +1,16 @@
-import os
-import json
-from fastapi import FastAPI, HTTPException, status
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    status,
+    APIRouter,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from dataclasses import asdict
+import asyncio
 
 from .state.app_state import app_state
 from .linux.app_linux import LinuxCPUController
@@ -226,3 +232,36 @@ def get_full_app_state():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to dump application state state: {str(e)}",
         )
+
+
+#  ==== SOCKET ====
+
+router = APIRouter()
+
+# Utilization Core
+@router.websocket("/ws/utilization")
+async def cpu_websocket(websocket: WebSocket):
+    await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
+    try:
+        while True:
+            # Panggil fungsi dari modul linux
+            data = cpu_controller.get_cpu_utilization(max_cores=4)
+            await websocket.send_json(data)
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        print("Client disconnected from core websocket")
+
+
+@router.websocket("/ws/status")
+async def cpu_status_websocket(websocket: WebSocket):
+    await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
+    try:
+        while True:
+            data = cpu_controller.get_cpu_status()
+            await websocket.send_json(data)
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        print("Client disconnected from status websocket")
+
+
+app.include_router(router)
