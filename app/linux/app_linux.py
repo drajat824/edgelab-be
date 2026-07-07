@@ -242,6 +242,21 @@ class LinuxCPUController:
             logging.error(f"Failed to write CPU frequencies to hardware. Error: {e}")
             return False
 
+    # ==== MODEL ====
+     
+    def apply_cores(self, cores: list[int]) -> bool:
+        try:
+            if hasattr(app_state.model, "process_pid") and app_state.model.process_pid:
+                pid = app_state.model.process_pid
+                if psutil.pid_exists(pid):
+                    process = psutil.Process(pid)
+                    process.cpu_affinity(cores)
+                    return True
+            return True
+        except Exception as e:
+            logging.error(f"Failed to write cores. Error: {e}")
+            return False
+
     # ==== WEBSOCKET =====
 
     def get_cpu_utilization(self, max_cores: int = 4) -> dict:

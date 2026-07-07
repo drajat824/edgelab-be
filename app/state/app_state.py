@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List
+import asyncio
 
 
 @dataclass
@@ -39,8 +40,6 @@ class CPUState:
     governor: str = "ondemand"
     maxFreq: float = 0
     minFreq: float = 0
-    thread: int = 4
-    core: List[int] = field(default_factory=lambda: [0, 1, 2, 3])
 
     # Menghubungkan semua state governor
     ondemand: OndemandState = field(default_factory=OndemandState)
@@ -50,8 +49,16 @@ class CPUState:
 
 
 @dataclass
+class ModelState:
+    num_threads: int = 4
+    cores: List[int] = field(default_factory=lambda: [0, 1, 2, 3])
+    process_pid: int = 0
+    reload_model_event: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+
+@dataclass
 class AppState:
     cpu: CPUState = field(default_factory=CPUState)
+    model: ModelState = field(default_factory=ModelState)
 
 
 # Inisialisasi objek utama

@@ -234,9 +234,72 @@ def get_full_app_state():
         )
 
 
+#  ==== THREAD & CORE ====
+
+
+class ThreadInput(BaseModel):
+    num_threads: int = 4
+
+
+class CoreInput(BaseModel):
+    cores: list[int] = [0, 1, 2, 3]
+
+
+@app.get("/api/thread")
+async def get_thread_state():
+    try:
+        return {"status": "success", "num_threads": app_state.model.num_threads}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch thread allocation: {str(e)}"
+        )
+
+
+@app.post("/api/thread")
+async def handle_thread_state(config: ThreadInput):
+    try:
+        if app_state.model.num_threads != config.num_threads:
+            app_state.model.num_threads = config.num_threads
+            app_state.model.reload_model_event.set()
+            return {"status": "success", "num_threads": app_state.model.num_threads}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update thread allocation: {str(e)}"
+        )
+
+
+@app.get("/api/cores")
+async def get_core_state():
+    try:
+        return {"status": "success", "cores": app_state.model.cores}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch cores allocation: {str(e)}"
+        )
+
+
+@app.post("/api/cores")
+async def handle_core_state(config: CoreInput):
+    try:
+        if app_state.model.cores != config.cores:
+            app_state.model.cores = config.cores
+            success = cpu_controller.apply_cores(config.cores)
+            if not success:
+                raise HTTPException(
+                    status_code=500, detail="Failed to apply core affinity at OS level."
+                )
+            return {"status": "success", "cores": app_state.model.cores}
+        return {"status": "success", "cores": app_state.model.cores}
+    except HTTPException as http_err:
+        raise http_err
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update cores allocation: {str(e)}")
+
+
 #  ==== SOCKET ====
 
 router = APIRouter()
+
 
 # Utilization Core
 @router.websocket("/ws/utilization")
