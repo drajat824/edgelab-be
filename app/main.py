@@ -84,6 +84,8 @@ def get_current_hardware_status():
             "governor": governor,
             "minFreq": app_state.cpu.minFreq,
             "maxFreq": app_state.cpu.maxFreq,
+            "cores": app_state.model.cores,
+            "numThread": app_state.model.num_threads,
             "tunables": {
                 k: v
                 for k, v in hardware_data.items()
