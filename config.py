@@ -1,4 +1,4 @@
-# app/config.py
+# config.py
 UPDATE_INTERVAL = 0.2
 CPU_PATH = "/sys/devices/system/cpu"
 THERMAL_PATH = "/sys/class/thermal"

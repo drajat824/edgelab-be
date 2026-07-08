@@ -3,7 +3,7 @@ import os
 import logging
 import subprocess
 import psutil
-from ..state.app_state import app_state
+from app_state import app_state
 
 # Uniform logging format
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -240,21 +240,6 @@ class LinuxCPUController:
             return True
         except Exception as e:
             logging.error(f"Failed to write CPU frequencies to hardware. Error: {e}")
-            return False
-
-    # ==== MODEL ====
-     
-    def apply_cores(self, cores: list[int]) -> bool:
-        try:
-            if hasattr(app_state.model, "process_pid") and app_state.model.process_pid:
-                pid = app_state.model.process_pid
-                if psutil.pid_exists(pid):
-                    process = psutil.Process(pid)
-                    process.cpu_affinity(cores)
-                    return True
-            return True
-        except Exception as e:
-            logging.error(f"Failed to write cores. Error: {e}")
             return False
 
     # ==== WEBSOCKET =====

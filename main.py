@@ -11,9 +11,10 @@ from pydantic import BaseModel
 from typing import Optional
 from dataclasses import asdict
 import asyncio
+import httpx
 
-from .state.app_state import app_state
-from .linux.app_linux import LinuxCPUController
+from app_state import app_state
+from app_linux import LinuxCPUController
 
 app = FastAPI(title="EdgeLab CPU Controller API")
 cpu_controller = LinuxCPUController()
@@ -84,8 +85,6 @@ def get_current_hardware_status():
             "governor": governor,
             "minFreq": app_state.cpu.minFreq,
             "maxFreq": app_state.cpu.maxFreq,
-            "cores": app_state.model.cores,
-            "numThread": app_state.model.num_threads,
             "tunables": {
                 k: v
                 for k, v in hardware_data.items()
@@ -234,69 +233,6 @@ def get_full_app_state():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to dump application state state: {str(e)}",
         )
-
-
-#  ==== THREAD & CORE ====
-
-
-class ThreadInput(BaseModel):
-    num_threads: int = 4
-
-
-class CoreInput(BaseModel):
-    cores: list[int] = [0, 1, 2, 3]
-
-
-@app.get("/api/thread")
-async def get_thread_state():
-    try:
-        return {"status": "success", "num_threads": app_state.model.num_threads}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch thread allocation: {str(e)}"
-        )
-
-
-@app.post("/api/thread")
-async def handle_thread_state(config: ThreadInput):
-    try:
-        if app_state.model.num_threads != config.num_threads:
-            app_state.model.num_threads = config.num_threads
-            app_state.model.reload_model_event.set()
-            return {"status": "success", "num_threads": app_state.model.num_threads}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update thread allocation: {str(e)}"
-        )
-
-
-@app.get("/api/cores")
-async def get_core_state():
-    try:
-        return {"status": "success", "cores": app_state.model.cores}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch cores allocation: {str(e)}"
-        )
-
-
-@app.post("/api/cores")
-async def handle_core_state(config: CoreInput):
-    try:
-        if app_state.model.cores != config.cores:
-            app_state.model.cores = config.cores
-            success = cpu_controller.apply_cores(config.cores)
-            if not success:
-                raise HTTPException(
-                    status_code=500, detail="Failed to apply core affinity at OS level."
-                )
-            return {"status": "success", "cores": app_state.model.cores}
-        return {"status": "success", "cores": app_state.model.cores}
-    except HTTPException as http_err:
-        raise http_err
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update cores allocation: {str(e)}")
-
 
 #  ==== SOCKET ====
 
