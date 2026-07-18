@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from typing import Optional
 from dataclasses import asdict
 import asyncio
-import httpx
+import secrets
+import time
 
 from app_state import app_state
 from app_linux import LinuxCPUController
@@ -234,10 +235,10 @@ def get_full_app_state():
             detail=f"Failed to dump application state state: {str(e)}",
         )
 
+
 #  ==== SOCKET ====
 
 router = APIRouter()
-
 
 # Utilization Core
 @router.websocket("/ws/utilization")
@@ -252,8 +253,7 @@ async def cpu_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected from core websocket")
 
-
-@router.websocket("/ws/status")
+@router.websocket("/ws/metrics")
 async def cpu_status_websocket(websocket: WebSocket):
     await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
     try:
@@ -264,5 +264,44 @@ async def cpu_status_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected from status websocket")
 
+# ==== SESSION ====
+
+ACTIVE_SESSION = {
+    "token": None,
+    "expires_at": 0
+}
+
+class TokenPayload(BaseModel):
+    token: str | None = None
+
+@router.post("/api/session/check")
+async def check_or_create_session(payload: TokenPayload):
+    current_time = time.time()
+    
+    if payload.token and ACTIVE_SESSION["token"] == payload.token:
+        ACTIVE_SESSION["expires_at"] = current_time + 10
+        return {"status": "authorized", "token": payload.token}
+
+    if ACTIVE_SESSION["token"] is not None and ACTIVE_SESSION["expires_at"] > current_time:
+        raise HTTPException(
+            status_code=403, 
+            detail="The device is being accessed in another tab or browser."
+        )
+
+    new_token = secrets.token_hex(16)
+    ACTIVE_SESSION["token"] = new_token
+    ACTIVE_SESSION["expires_at"] = current_time + 10  # Berlaku 10 detik kedepan
+    
+    return {"status": "authorized", "token": new_token}
+
+@router.post("/api/session/heartbeat")
+async def session_heartbeat(payload: TokenPayload):
+    current_time = time.time()
+    
+    if not payload.token or ACTIVE_SESSION["token"] != payload.token:
+        raise HTTPException(status_code=403, detail="Session invalid.")
+        
+    ACTIVE_SESSION["expires_at"] = current_time + 10
+    return {"status": "alive"}
 
 app.include_router(router)
