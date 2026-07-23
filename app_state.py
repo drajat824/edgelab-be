@@ -43,7 +43,7 @@ class CPUState:
     conservative: ConservativeState = field(default_factory=ConservativeState)
     schedutil: SchedutilState = field(default_factory=SchedutilState)
     userspace: UserspaceState = field(default_factory=UserspaceState)
-
+    
 @dataclass
 class AppState:
     cpu: CPUState = field(default_factory=CPUState)
