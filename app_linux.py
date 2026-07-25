@@ -322,9 +322,6 @@ class MetricsFetcher:
                         data = response.json()
                         fps_cam = float(data.get("fps_camera", 0.0))
                         fps_inf = float(data.get("inference_fps", 0.0))
-                        
-                        print(fps_inf)
-                        print(fps_inf > 0)
 
                         metrics = self.app_state.cpu.userspaceMetrics
                         metrics.camera_fps = fps_cam
@@ -444,7 +441,7 @@ class DynamicScriptEngine:
         metrics = getattr(self.app_state.cpu, "userspaceMetrics", None)
         cam_fps = float(metrics.camera_fps) if metrics else 0.0
         inf_running = bool(metrics.inference_running) if metrics else False
-        cpu_temp = float(getattr(self.app_state.cpu, "temperature", 0.0))
+        cpu_temp = float(getattr(metrics, "temp", 0.0))
 
         return {
             "cpu_temp": cpu_temp,
