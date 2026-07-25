@@ -15,10 +15,14 @@ import secrets
 import time
 
 from app_state import app_state
-from app_linux import LinuxCPUController
+from app_linux import LinuxCPUController, MetricsFetcher, DynamicScriptEngine
 
 app = FastAPI(title="EdgeLab CPU Controller API")
 cpu_controller = LinuxCPUController()
+metrics_controller = MetricsFetcher()
+scripting_controller = DynamicScriptEngine(
+    app_state=app_state, cpu_controller=cpu_controller
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +55,13 @@ class GovernorParamsInput(BaseModel):
     isIgnoreNice: Optional[bool] = None
     isIoBusy: Optional[bool] = None
     fixedFrequency: Optional[float] = None
+    script: str
+    isDynamicScripting: bool = True
+
+
+class UpdateScriptPayload(BaseModel):
+    script: str
+    isDynamicScripting: bool = True
 
 
 # 1. GET CURRENT CPU STATUS
@@ -102,7 +113,7 @@ def get_current_hardware_status():
 
 # 2. UPDATE GOVERNOR SELECTION
 @app.post("/api/cpu/governor")
-def handle_governor_state(payload: GovernorInput):
+async def handle_governor_state(payload: GovernorInput):
     try:
         governor = payload.governor
         success = cpu_controller.apply_cpu_governor(governor)
@@ -175,7 +186,7 @@ def handle_cpu_frequency(payload: FrequencyInput):
 
 # 4. UPDATE GOVERNOR TUNABLES
 @app.post("/api/cpu/governor/params")
-def handle_governor_params(payload: GovernorParamsInput):
+async def handle_governor_params(payload: GovernorParamsInput):
     try:
         governor = app_state.cpu.governor
         sub_state = getattr(app_state.cpu, governor, None)
@@ -201,6 +212,31 @@ def handle_governor_params(payload: GovernorParamsInput):
                     detail=f"Invalid parameter '{key}' for the currently active governor '{governor}'.",
                 )
 
+        # VALIDASI SCRIPTING
+        target_is_dynamic = incoming_params.get(
+            "isDynamicScripting",
+            getattr(app_state.cpu.userspace, "isDynamicScripting", False),
+        )
+        target_script = (
+            incoming_params.get(
+                "script", getattr(app_state.cpu.userspace, "script", "")
+            )
+            or ""
+        )
+        if governor == "userspace" and target_is_dynamic:
+            if not target_script.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Script tidak boleh kosong saat Dynamic Scripting aktif.",
+                )
+            try:
+                compile(target_script, "<userspace_script>", "exec")
+            except SyntaxError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
+                )
+
         # Apply to hardware
         success = cpu_controller.apply_governor_params(governor, incoming_params)
         if not success:
@@ -224,7 +260,61 @@ def handle_governor_params(payload: GovernorParamsInput):
         )
 
 
-# 5. DEBUG LOGS
+from fastapi import HTTPException, status
+
+
+@app.post("/api/cpu/userspace/start")
+async def start_dynamic_scripting():
+    current_governor = getattr(app_state.cpu, "governor", "")
+    is_dynamic = getattr(app_state.cpu.userspace, "isDynamicScripting", False)
+    script_content = getattr(app_state.cpu.userspace, "script", "") or ""
+
+    if current_governor != "userspace" or not is_dynamic:
+        metrics_controller.stop()
+        scripting_controller.stop()
+        return {
+            "status": "stopped",
+            "message": "Scripting stop!",
+        }
+
+    if not script_content.strip():
+        metrics_controller.stop()
+        scripting_controller.stop()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Script kosong",
+        )
+
+    try:
+        compile(script_content, "<userspace_script>", "exec")
+    except SyntaxError as e:
+        metrics_controller.stop()
+        scripting_controller.stop()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
+        )
+
+    metrics_controller.start()
+    scripting_controller.start()
+
+    return {
+        "status": "success",
+        "message": "Dynamic scripting started successfully.",
+    }
+
+
+@app.post("/api/cpu/userspace/stop")
+async def stop_dynamic_scripting():
+    metrics_controller.stop()
+    scripting_controller.stop()
+    return {
+        "status": "success",
+        "message": "Dynamic scripting engine berhasil dihentikan.",
+    }
+
+
+# 6. DEBUG LOGS
 @app.get("/log")
 def get_full_app_state():
     try:
@@ -240,6 +330,7 @@ def get_full_app_state():
 
 router = APIRouter()
 
+
 # Utilization Core
 @router.websocket("/ws/utilization")
 async def cpu_websocket(websocket: WebSocket):
@@ -253,6 +344,7 @@ async def cpu_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected from core websocket")
 
+
 @router.websocket("/ws/metrics")
 async def cpu_status_websocket(websocket: WebSocket):
     await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
@@ -264,44 +356,49 @@ async def cpu_status_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected from status websocket")
 
+
 # ==== SESSION ====
 
-ACTIVE_SESSION = {
-    "token": None,
-    "expires_at": 0
-}
+ACTIVE_SESSION = {"token": None, "expires_at": 0}
+
 
 class TokenPayload(BaseModel):
     token: str | None = None
 
+
 @router.post("/api/session/check")
 async def check_or_create_session(payload: TokenPayload):
     current_time = time.time()
-    
+
     if payload.token and ACTIVE_SESSION["token"] == payload.token:
         ACTIVE_SESSION["expires_at"] = current_time + 10
         return {"status": "authorized", "token": payload.token}
 
-    if ACTIVE_SESSION["token"] is not None and ACTIVE_SESSION["expires_at"] > current_time:
+    if (
+        ACTIVE_SESSION["token"] is not None
+        and ACTIVE_SESSION["expires_at"] > current_time
+    ):
         raise HTTPException(
-            status_code=403, 
-            detail="The device is being accessed in another tab or browser."
+            status_code=403,
+            detail="The device is being accessed in another tab or browser.",
         )
 
     new_token = secrets.token_hex(16)
     ACTIVE_SESSION["token"] = new_token
     ACTIVE_SESSION["expires_at"] = current_time + 10  # Berlaku 10 detik kedepan
-    
+
     return {"status": "authorized", "token": new_token}
+
 
 @router.post("/api/session/heartbeat")
 async def session_heartbeat(payload: TokenPayload):
     current_time = time.time()
-    
+
     if not payload.token or ACTIVE_SESSION["token"] != payload.token:
         raise HTTPException(status_code=403, detail="Session invalid.")
-        
+
     ACTIVE_SESSION["expires_at"] = current_time + 10
     return {"status": "alive"}
+
 
 app.include_router(router)

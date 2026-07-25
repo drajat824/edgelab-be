@@ -4,12 +4,20 @@ import logging
 import subprocess
 import psutil
 from app_state import app_state
+import json
+import asyncio
+import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Uniform logging format
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 load_dotenv()
 
 SUDO_PASSWORD = os.getenv("SUDO_PASSWORD")
+FREQ_RANGE = "[1.4, 1.7, 2.1]"
+FREQ_GHZ = json.loads(FREQ_RANGE)
 
 
 class LinuxCPUController:
@@ -126,6 +134,9 @@ class LinuxCPUController:
                         result["fixedFrequency"] = 0.0
                 except (PermissionError, OSError):
                     result["fixedFrequency"] = 0.0
+
+            result["script"] = app_state.cpu.userspace.script
+            result["isDynamicScripting"] = app_state.cpu.userspace.isDynamicScripting
 
         return result
 
@@ -250,7 +261,7 @@ class LinuxCPUController:
         cores_usage = [round(x) for x in cores_usage]
         avg_usage = round(sum(cores_usage) / len(cores_usage)) if cores_usage else 0
         return {"average": avg_usage, "cores": cores_usage}
-    
+
     def get_cpu_status(self) -> dict:
         freq_cmd = "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
         freq_raw = self.execute_cmd(freq_cmd)
@@ -265,4 +276,196 @@ class LinuxCPUController:
             temp_c = round(float(temp_raw) / 1000, 1)
         else:
             temp_c = 0.0
+
+        app_state.cpu.userspaceMetrics.temp = temp_c
         return {"frequency": freq_ghz, "temperature": temp_c}
+
+
+class MetricsFetcher:
+    def __init__(
+        self,
+        state=app_state,
+        url: str = "http://localhost:8041/api/userspace-metrics",
+    ):
+        self.app_state = state
+        self.url = url
+        self.running = False
+        self._task = None
+        self.linux_cpu_controller = LinuxCPUController()
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            # Dapatkan main event loop FastAPI/Uvicorn yang sedang berjalan
+            try:
+                loop = asyncio.get_running_loop()
+                self._task = loop.create_task(self._poll_loop())
+            except RuntimeError:
+                # Fallback jika dipanggil dari worker thread
+                loop = asyncio.get_event_loop()
+                self._task = asyncio.run_coroutine_threadsafe(self._poll_loop(), loop)
+
+    def stop(self):
+        self.running = False
+        if self._task:
+            if isinstance(self._task, asyncio.Task):
+                self._task.cancel()
+            else:
+                self._task.cancel()
+
+    async def _poll_loop(self):
+        async with httpx.AsyncClient(timeout=2) as client:
+            while self.running:
+                try:
+                    response = await client.get(self.url)
+                    if response.status_code == 200:
+                        data = response.json()
+                        fps_cam = float(data.get("fps_camera", 0.0))
+                        fps_inf = float(data.get("inference_fps", 0.0))
+                        
+                        print(fps_inf)
+                        print(fps_inf > 0)
+
+                        metrics = self.app_state.cpu.userspaceMetrics
+                        metrics.camera_fps = fps_cam
+                        metrics.inference_fps = fps_inf
+                        metrics.inference_running = fps_inf > 0
+                    else:
+                        self._set_fallback_state()
+
+                except Exception:
+                    self._set_fallback_state()
+
+                await asyncio.sleep(0.5)
+
+    def _set_fallback_state(self):
+        metrics = self.app_state.cpu.userspaceMetrics
+        metrics.camera_fps = 0.0
+        metrics.inference_fps = 0.0
+        metrics.inference_running = False
+
+    # ==== USERSPACE - DYNAMIC SCRIPTING ====
+
+    def get_valid_freqs(self) -> list[float]:
+        min_f = app_state.cpu.minFreq
+        max_f = app_state.cpu.maxFreq
+        valid_freqs = [f for f in FREQ_GHZ if min_f <= f <= max_f]
+        return sorted(valid_freqs) if valid_freqs else sorted(FREQ_GHZ)
+
+    def userspace_set_frequency(self, step: int) -> bool:
+        freqs = self.get_valid_freqs()
+        curent_f = app_state.cpu.userspace.fixedFrequency
+        current_idx = min(
+            range(len(freqs)),
+            key=lambda i: abs(freqs[i] - curent_f),
+        )
+
+        max_idx = len(freqs) - 1
+        new_idx = max(0, min(max_idx, current_idx + step))
+        target_freq = freqs[new_idx]
+        app_state.cpu.userspace.fixedFrequency = target_freq
+        return self.linux_cpu_controller.apply_governor_params(
+            governor="userspace", params={"fixedFrequency": target_freq}
+        )
+
+    def userspace_set_min_frequency(self) -> bool:
+        freqs = self.get_valid_freqs()
+        target_freq = freqs[0]
+        app_state.cpu.userspace.fixedFrequency = target_freq
+        return self.linux_cpu_controller.apply_governor_params(
+            governor="userspace", params={"fixedFrequency": target_freq}
+        )
+
+    def userspace_set_max_frequency(self) -> bool:
+        freqs = self.get_valid_freqs()
+        target_freq = freqs[-1]
+        app_state.cpu.userspace.fixedFrequency = target_freq
+        return self.linux_cpu_controller.apply_governor_params(
+            governor="userspace", params={"fixedFrequency": target_freq}
+        )
+
+    def userspace_hold_frequency(self) -> bool:
+        return True
+
+
+class DynamicScriptEngine:
+    def __init__(self, app_state, cpu_controller):
+        self.app_state = app_state
+        self.cpu = cpu_controller
+        self.running = False
+        self._task = None
+        self._current_script_str = ""
+        self._compiled_code = None
+        self.metrix_fetcher = MetricsFetcher()
+
+    def start(self, interval: float = 1):
+        if not self.running:
+            self.running = True
+            try:
+                loop = asyncio.get_running_loop()
+                self._task = loop.create_task(self._execution_loop(interval))
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+                self._task = asyncio.run_coroutine_threadsafe(
+                    self._execution_loop(interval), loop
+                )
+            logger.info("DynamicScriptEngine started.")
+
+    def stop(self):
+        self.running = False
+        if self._task:
+            if isinstance(self._task, asyncio.Task):
+                self._task.cancel()
+        logger.info("DynamicScriptEngine stopped.")
+
+    def _sync_and_compile_script(self):
+        userspace_state = getattr(self.app_state.cpu, "userspace", None)
+        if not userspace_state:
+            return None
+        latest_script = userspace_state.script or ""
+
+        if latest_script != self._current_script_str:
+            self._current_script_str = latest_script
+            if latest_script.strip():
+                try:
+                    self._compiled_code = compile(
+                        latest_script, "<userspace_script>", "exec"
+                    )
+                    logger.info("Script compile success")
+                except SyntaxError as e:
+                    logger.error(f"Syntax Error: {e}")
+                    self._compiled_code = None
+            else:
+                self._compiled_code = None
+
+        return self._compiled_code
+
+    def _build_context(self) -> dict:
+        metrics = getattr(self.app_state.cpu, "userspaceMetrics", None)
+        cam_fps = float(metrics.camera_fps) if metrics else 0.0
+        inf_running = bool(metrics.inference_running) if metrics else False
+        cpu_temp = float(getattr(self.app_state.cpu, "temperature", 0.0))
+
+        return {
+            "cpu_temp": cpu_temp,
+            "camera_fps": cam_fps,
+            "inference_running": inf_running,
+            "set_frequency": self.metrix_fetcher.userspace_set_frequency,
+            "set_min_frequency": self.metrix_fetcher.userspace_set_min_frequency,
+            "set_max_frequency": self.metrix_fetcher.userspace_set_max_frequency,
+            "hold_frequency": self.metrix_fetcher.userspace_hold_frequency,
+        }
+
+    async def _execution_loop(self, interval: float):
+        while self.running:
+            try:
+                userspace_state = getattr(self.app_state.cpu, "userspace", None)
+                if userspace_state and userspace_state.isDynamicScripting:
+                    compiled_code = self._sync_and_compile_script()
+                    if compiled_code:
+                        context = self._build_context()
+                        # Gunakan asyncio.to_thread untuk mengeksekusi script sync
+                        await asyncio.to_thread(exec, compiled_code, context)
+            except Exception as e:
+                logger.error(f"[User Script Exec Error]: {e}")
+            await asyncio.sleep(interval)

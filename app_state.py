@@ -31,6 +31,12 @@ class UserspaceState:
     isDynamicScripting: bool = False
     script: str = ""
 
+@dataclass
+class UserspaceMetrics:
+    camera_fps: float = 0.0
+    inference_fps: float = 0.0
+    inference_running: bool = False
+    temp: float = 0
 
 @dataclass
 class CPUState:
@@ -43,6 +49,7 @@ class CPUState:
     conservative: ConservativeState = field(default_factory=ConservativeState)
     schedutil: SchedutilState = field(default_factory=SchedutilState)
     userspace: UserspaceState = field(default_factory=UserspaceState)
+    userspaceMetrics: UserspaceMetrics = field(default_factory=UserspaceMetrics)
     
 @dataclass
 class AppState:
