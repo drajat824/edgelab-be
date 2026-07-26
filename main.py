@@ -63,6 +63,9 @@ class UpdateScriptPayload(BaseModel):
     script: str
     isDynamicScripting: bool = True
 
+class ValidateScript(BaseModel):
+    script: str
+
 
 # 1. GET CURRENT CPU STATUS
 @app.get("/api/cpu/status")
@@ -212,30 +215,30 @@ async def handle_governor_params(payload: GovernorParamsInput):
                     detail=f"Invalid parameter '{key}' for the currently active governor '{governor}'.",
                 )
 
-        # VALIDASI SCRIPTING
-        target_is_dynamic = incoming_params.get(
-            "isDynamicScripting",
-            getattr(app_state.cpu.userspace, "isDynamicScripting", False),
-        )
-        target_script = (
-            incoming_params.get(
-                "script", getattr(app_state.cpu.userspace, "script", "")
-            )
-            or ""
-        )
-        if governor == "userspace" and target_is_dynamic:
-            if not target_script.strip():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Script tidak boleh kosong saat Dynamic Scripting aktif.",
-                )
-            try:
-                compile(target_script, "<userspace_script>", "exec")
-            except SyntaxError as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
-                )
+        # # VALIDASI SCRIPTING
+        # target_is_dynamic = incoming_params.get(
+        #     "isDynamicScripting",
+        #     getattr(app_state.cpu.userspace, "isDynamicScripting", False),
+        # )
+        # target_script = (
+        #     incoming_params.get(
+        #         "script", getattr(app_state.cpu.userspace, "script", "")
+        #     )
+        #     or ""
+        # )
+        # if governor == "userspace" and target_is_dynamic:
+        #     if not target_script.strip():
+        #         raise HTTPException(
+        #             status_code=status.HTTP_400_BAD_REQUEST,
+        #             detail="Script tidak boleh kosong saat Dynamic Scripting aktif.",
+        #         )
+        #     try:
+        #         compile(target_script, "<userspace_script>", "exec")
+        #     except SyntaxError as e:
+        #         raise HTTPException(
+        #             status_code=status.HTTP_400_BAD_REQUEST,
+        #             detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
+        #         )
 
         # Apply to hardware
         success = cpu_controller.apply_governor_params(governor, incoming_params)
@@ -263,11 +266,10 @@ async def handle_governor_params(payload: GovernorParamsInput):
 from fastapi import HTTPException, status
 
 
-@app.post("/api/cpu/userspace/start")
+@app.get("/api/cpu/userspace/start")
 async def start_dynamic_scripting():
     current_governor = getattr(app_state.cpu, "governor", "")
     is_dynamic = getattr(app_state.cpu.userspace, "isDynamicScripting", False)
-    script_content = getattr(app_state.cpu.userspace, "script", "") or ""
 
     if current_governor != "userspace" or not is_dynamic:
         metrics_controller.stop()
@@ -276,24 +278,6 @@ async def start_dynamic_scripting():
             "status": "stopped",
             "message": "Scripting stop!",
         }
-
-    if not script_content.strip():
-        metrics_controller.stop()
-        scripting_controller.stop()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Script kosong",
-        )
-
-    try:
-        compile(script_content, "<userspace_script>", "exec")
-    except SyntaxError as e:
-        metrics_controller.stop()
-        scripting_controller.stop()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
-        )
 
     metrics_controller.start()
     scripting_controller.start()
@@ -304,7 +288,7 @@ async def start_dynamic_scripting():
     }
 
 
-@app.post("/api/cpu/userspace/stop")
+@app.get("/api/cpu/userspace/stop")
 async def stop_dynamic_scripting():
     metrics_controller.stop()
     scripting_controller.stop()
@@ -313,6 +297,26 @@ async def stop_dynamic_scripting():
         "message": "Dynamic scripting engine berhasil dihentikan.",
     }
 
+@app.post("/api/cpu/userspace/validate")
+async def validate_script(payload: ValidateScript):
+    script_content = payload.script or ""
+    if not script_content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Script tidak boleh kosong.",
+        )
+    try:
+        compile(script_content, "<userspace_script>", "exec")
+    except SyntaxError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
+        )
+        
+    return {
+        "status": "success",
+        "message": "Sintaks script valid.",
+    }
 
 # 6. DEBUG LOGS
 @app.get("/log")

@@ -282,6 +282,7 @@ class LinuxCPUController:
 
 
 class MetricsFetcher:
+
     def __init__(
         self,
         state=app_state,
@@ -293,25 +294,26 @@ class MetricsFetcher:
         self._task = None
         self.linux_cpu_controller = LinuxCPUController()
 
+        # State kontrol penahanan frekuensi
+        self.is_held = False  # Menandai apakah frekuensi saat ini terkunci
+        self._hold_requested_in_tick = (
+            False  # Menandai apakah hold_frequency() dipanggil di tick ini
+        )
+
     def start(self):
         if not self.running:
             self.running = True
-            # Dapatkan main event loop FastAPI/Uvicorn yang sedang berjalan
             try:
                 loop = asyncio.get_running_loop()
                 self._task = loop.create_task(self._poll_loop())
             except RuntimeError:
-                # Fallback jika dipanggil dari worker thread
                 loop = asyncio.get_event_loop()
                 self._task = asyncio.run_coroutine_threadsafe(self._poll_loop(), loop)
 
     def stop(self):
         self.running = False
         if self._task:
-            if isinstance(self._task, asyncio.Task):
-                self._task.cancel()
-            else:
-                self._task.cancel()
+            self._task.cancel()
 
     async def _poll_loop(self):
         async with httpx.AsyncClient(timeout=2) as client:
@@ -341,7 +343,16 @@ class MetricsFetcher:
         metrics.inference_fps = 0.0
         metrics.inference_running = False
 
-    # ==== USERSPACE - DYNAMIC SCRIPTING ====
+    # ==== HOOK UNTUK EXECUTOR / RUNNER SCRIPT ====
+
+    def on_script_execution_start(self):
+        self._hold_requested_in_tick = False
+
+    def on_script_execution_end(self):
+        if not self._hold_requested_in_tick:
+            self.is_held = False
+
+    # ==== USERSPACE - DYNAMIC SCRIPTING API ====
 
     def get_valid_freqs(self) -> list[float]:
         min_f = app_state.cpu.minFreq
@@ -350,6 +361,9 @@ class MetricsFetcher:
         return sorted(valid_freqs) if valid_freqs else sorted(FREQ_GHZ)
 
     def userspace_set_frequency(self, step: int) -> bool:
+        if self.is_held:
+            return False
+
         freqs = self.get_valid_freqs()
         curent_f = app_state.cpu.userspace.fixedFrequency
         current_idx = min(
@@ -360,12 +374,19 @@ class MetricsFetcher:
         max_idx = len(freqs) - 1
         new_idx = max(0, min(max_idx, current_idx + step))
         target_freq = freqs[new_idx]
+
         app_state.cpu.userspace.fixedFrequency = target_freq
         return self.linux_cpu_controller.apply_governor_params(
             governor="userspace", params={"fixedFrequency": target_freq}
         )
 
+    def userspace_hold_frequency(self) -> bool:
+        self.is_held = True
+        self._hold_requested_in_tick = True
+        return True
+
     def userspace_set_min_frequency(self) -> bool:
+        self.is_held = False
         freqs = self.get_valid_freqs()
         target_freq = freqs[0]
         app_state.cpu.userspace.fixedFrequency = target_freq
@@ -374,15 +395,13 @@ class MetricsFetcher:
         )
 
     def userspace_set_max_frequency(self) -> bool:
+        self.is_held = False
         freqs = self.get_valid_freqs()
         target_freq = freqs[-1]
         app_state.cpu.userspace.fixedFrequency = target_freq
         return self.linux_cpu_controller.apply_governor_params(
             governor="userspace", params={"fixedFrequency": target_freq}
         )
-
-    def userspace_hold_frequency(self) -> bool:
-        return True
 
 
 class DynamicScriptEngine:
@@ -461,8 +480,10 @@ class DynamicScriptEngine:
                     compiled_code = self._sync_and_compile_script()
                     if compiled_code:
                         context = self._build_context()
-                        # Gunakan asyncio.to_thread untuk mengeksekusi script sync
+                        self.metrix_fetcher.on_script_execution_start()
                         await asyncio.to_thread(exec, compiled_code, context)
+                        self.metrix_fetcher.on_script_execution_end()
+
             except Exception as e:
                 logger.error(f"[User Script Exec Error]: {e}")
             await asyncio.sleep(interval)
