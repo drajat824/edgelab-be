@@ -260,7 +260,7 @@ class LinuxCPUController:
         cores_usage = cores_usage[:max_cores]
         cores_usage = [round(x) for x in cores_usage]
         avg_usage = round(sum(cores_usage) / len(cores_usage)) if cores_usage else 0
-        return {"average": avg_usage, "cores": cores_usage}
+        return {"average": avg_usage, "core": cores_usage}
 
     def get_cpu_status(self) -> dict:
         freq_cmd = "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
