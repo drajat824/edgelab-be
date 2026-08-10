@@ -324,11 +324,12 @@ class MetricsFetcher:
                         data = response.json()
                         fps_cam = float(data.get("fps_camera", 0.0))
                         fps_inf = float(data.get("inference_fps", 0.0))
+                        detection_run = data.get("detection_run", False)
 
                         metrics = self.app_state.cpu.userspaceMetrics
                         metrics.camera_fps = fps_cam
                         metrics.inference_fps = fps_inf
-                        metrics.inference_running = fps_inf > 0
+                        metrics.inference_running = detection_run
                     else:
                         self._set_fallback_state()
 
