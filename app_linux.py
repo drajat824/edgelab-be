@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 load_dotenv()
 
 SUDO_PASSWORD = os.getenv("SUDO_PASSWORD")
-FREQ_RANGE = "[1.4, 1.7, 2.1]"
+FREQ_RANGE = "[0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8]"
 FREQ_GHZ = json.loads(FREQ_RANGE)
 
 
