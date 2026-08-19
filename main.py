@@ -55,8 +55,8 @@ class GovernorParamsInput(BaseModel):
     isIgnoreNice: Optional[bool] = None
     isIoBusy: Optional[bool] = None
     fixedFrequency: Optional[float] = None
-    script: str
-    isDynamicScripting: bool = True
+    script: Optional[str] = None
+    isDynamicScripting: Optional[bool] = True
 
 
 class UpdateScriptPayload(BaseModel):
@@ -193,7 +193,7 @@ async def handle_governor_params(payload: GovernorParamsInput):
     try:
         governor = app_state.cpu.governor
         sub_state = getattr(app_state.cpu, governor, None)
-
+        
         if not sub_state:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -214,31 +214,6 @@ async def handle_governor_params(payload: GovernorParamsInput):
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid parameter '{key}' for the currently active governor '{governor}'.",
                 )
-
-        # # VALIDASI SCRIPTING
-        # target_is_dynamic = incoming_params.get(
-        #     "isDynamicScripting",
-        #     getattr(app_state.cpu.userspace, "isDynamicScripting", False),
-        # )
-        # target_script = (
-        #     incoming_params.get(
-        #         "script", getattr(app_state.cpu.userspace, "script", "")
-        #     )
-        #     or ""
-        # )
-        # if governor == "userspace" and target_is_dynamic:
-        #     if not target_script.strip():
-        #         raise HTTPException(
-        #             status_code=status.HTTP_400_BAD_REQUEST,
-        #             detail="Script tidak boleh kosong saat Dynamic Scripting aktif.",
-        #         )
-        #     try:
-        #         compile(target_script, "<userspace_script>", "exec")
-        #     except SyntaxError as e:
-        #         raise HTTPException(
-        #             status_code=status.HTTP_400_BAD_REQUEST,
-        #             detail=f"Syntax error, script: {e.msg} (Line {e.lineno})",
-        #         )
 
         # Apply to hardware
         success = cpu_controller.apply_governor_params(governor, incoming_params)
