@@ -462,6 +462,8 @@ class DynamicScriptEngine:
         cam_fps = float(metrics.camera_fps) if metrics else 0.0
         inf_running = bool(metrics.inference_running) if metrics else False
         cpu_temp = float(getattr(metrics, "temp", 0.0))
+        
+        print(inf_running, "INFERNS RUNNING")
 
         return {
             "cpu_temp": cpu_temp,
