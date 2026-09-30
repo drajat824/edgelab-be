@@ -294,7 +294,7 @@ async def validate_script(payload: ValidateScript):
     }
 
 # 6. DEBUG LOGS
-@app.get("/log")
+@app.get("/api/log")
 def get_full_app_state():
     try:
         return {"status": "success", "app_state": asdict(app_state)}
@@ -311,7 +311,7 @@ router = APIRouter()
 
 
 # Utilization Core
-@router.websocket("/ws/utilization")
+@router.websocket("/api/ws/utilization")
 async def cpu_websocket(websocket: WebSocket):
     await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
     try:
@@ -324,7 +324,7 @@ async def cpu_websocket(websocket: WebSocket):
         print("Client disconnected from core websocket")
 
 
-@router.websocket("/ws/metrics")
+@router.websocket("/api/ws/metrics")
 async def cpu_status_websocket(websocket: WebSocket):
     await websocket.accept(headers=[(b"access-control-allow-origin", b"*")])
     try:
